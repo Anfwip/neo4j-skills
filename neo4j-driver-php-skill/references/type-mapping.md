@@ -24,7 +24,7 @@
 | `Path` | `\Laudis\Neo4j\Types\Path` |
 | `Vector` | `\Laudis\Neo4j\Types\Vector` |
 
-`Vector` is produced when decoding results from the server only — not supported as a query parameter.
+`Vector` — receive from server only; not supported as a query parameter.
 
 ## PHP-to-Cypher Parameter Conversion
 
@@ -39,7 +39,7 @@
 | Associative `array` | `Map` |
 | `\DateTimeInterface` | `DateTimeZoneId` |
 
-Empty `[]` is ambiguous — could be list or map. Use `ParameterHelper`:
+Empty `[]` is ambiguous — use `ParameterHelper`:
 
 ```php
 use Laudis\Neo4j\ParameterHelper;
@@ -50,74 +50,66 @@ ParameterHelper::asMap([])   // → empty Cypher Map
 
 ## Point Subtypes
 
-`PointInterface` is implemented by four classes:
-
 | Class | SRID | Use |
 |---|---|---|
 | `CartesianPoint` | 7203 | 2D Cartesian |
 | `Cartesian3DPoint` | 9157 | 3D Cartesian |
-| `WGS84Point` | 4326 | 2D geographic (latitude/longitude) |
+| `WGS84Point` | 4326 | 2D geographic (lat/lon) |
 | `WGS843DPoint` | 4979 | 3D geographic |
 
 ```php
 $point = $row->get('location');  // PointInterface
 
 if ($point instanceof \Laudis\Neo4j\Types\WGS84Point) {
-    echo $point->getX();  // longitude
-    echo $point->getY();  // latitude
+    $point->getX();  // longitude
+    $point->getY();  // latitude
 }
 ```
 
 ## Temporal Types
 
-Temporal types have **no calendar-field getters** (`getYear`, `getMonth`, etc. do not exist). Use `toDateTime()` to convert to `\DateTimeImmutable`, or access raw epoch accessors:
+**No calendar-field getters** — `getYear()`, `getMonth()`, `getDay()`, `getHour()`, `getMinute()`, `getSecond()`, `getTimezone()` do not exist. Use `toDateTime()` or epoch accessors:
 
 ```php
 $dt = $row->get('created');     // Laudis\Neo4j\Types\DateTime
 
-// Convert to PHP DateTimeImmutable (recommended)
-$php = $dt->toDateTime();       // \DateTimeImmutable
+$php = $dt->toDateTime();       // \DateTimeImmutable (recommended)
 
-// Raw epoch accessors
 $dt->getSeconds();              // epoch seconds
 $dt->getNanoseconds();
 $dt->getTimeZoneOffsetSeconds();
 ```
 
-`DateTimeZoneId`, `LocalDateTime`, `Date`, `Time`, `LocalTime` also expose `toDateTime()` or raw accessors — none have year/month/day/hour/minute/second getters.
+`DateTimeZoneId`, `LocalDateTime`, `Date`, `Time`, `LocalTime` — all have `toDateTime()` or raw accessors; none have year/month/day/hour/minute/second getters.
 
-Pass `\DateTimeInterface` as a parameter — driver maps it to `DateTimeZoneId`:
+Pass `\DateTimeInterface` as a parameter — mapped to `DateTimeZoneId`:
 
 ```php
-$client->run(
-    'CREATE (e:Event {at: $ts})',
-    ['ts' => new \DateTime('2024-06-01 12:00:00')]
-);
+$client->run('CREATE (e:Event {at: $ts})', ['ts' => new \DateTime('2024-06-01 12:00:00')]);
 ```
 
 ## Node and Relationship Access
 
 ```php
 // Node
-$node      = $row->get('p');                    // Laudis\Neo4j\Types\Node
-$intId     = $node->getId();                    // internal integer ID (legacy; always integer)
-$elementId = $node->getElementId();             // string element ID (use for Neo4j 5+)
-$labels    = $node->getLabels();                // CypherList of strings
-$props     = $node->getProperties();            // CypherMap
-$name      = $node->getProperty('name');        // single property value
-$all       = $node->getProperties()->toArray(); // all as PHP array
+$node      = $row->get('p');                     // Laudis\Neo4j\Types\Node
+$intId     = $node->getId();                     // integer (legacy)
+$elementId = $node->getElementId();              // string element ID (Neo4j 5+)
+$labels    = $node->getLabels();                 // CypherList<string>
+$name      = $node->getProperty('name');
+$all       = $node->getProperties()->toArray();  // PHP array
 
 // Relationship
-$rel        = $row->get('r');                         // Laudis\Neo4j\Types\Relationship
-$type       = $rel->getType();                        // e.g. 'KNOWS'
-$startIntId = $rel->getStartNodeId();                 // integer (legacy)
-$endIntId   = $rel->getEndNodeId();                   // integer (legacy)
-$startEId   = $rel->getStartNodeElementId();          // string element ID
-$endEId     = $rel->getEndNodeElementId();            // string element ID
+$rel        = $row->get('r');                    // Laudis\Neo4j\Types\Relationship
+$type       = $rel->getType();                   // e.g. 'KNOWS'
+$startIntId = $rel->getStartNodeId();            // integer (legacy)
+$endIntId   = $rel->getEndNodeId();              // integer (legacy)
+$startEId   = $rel->getStartNodeElementId();     // string element ID
+$endEId     = $rel->getEndNodeElementId();       // string element ID
 $since      = $rel->getProperty('since');
 
 // Path
-$path  = $row->get('p');                   // Laudis\Neo4j\Types\Path
-$nodes = $path->getNodes();                // CypherList of Node
-$rels  = $path->getRelationships();        // CypherList of Relationship
+$path  = $row->get('p');                         // Laudis\Neo4j\Types\Path
+$nodes = $path->getNodes();                      // CypherList<Node>
+$rels  = $path->getRelationships();              // CypherList<Relationship>
 ```

@@ -2,16 +2,13 @@
 
 ## DriverConfiguration
 
-Configure how the driver connects to Neo4j:
-
 ```php
 use Laudis\Neo4j\Databags\DriverConfiguration;
 use Laudis\Neo4j\ClientBuilder;
 
 $client = ClientBuilder::create()
     ->withDefaultDriverConfiguration(
-        DriverConfiguration::default()
-            ->withUserAgent('MyApp/1.0.0')
+        DriverConfiguration::default()->withUserAgent('MyApp/1.0.0')
     )
     ->withDriver('default', 'bolt+s://localhost:7687')
     ->build();
@@ -19,11 +16,9 @@ $client = ClientBuilder::create()
 
 | Option | Method | Description |
 |---|---|---|
-| User agent | `withUserAgent(string)` | Identifies the client to the Neo4j server |
+| User agent | `withUserAgent(string)` | Identifies client to the Neo4j server |
 
 ## SessionConfiguration
-
-Configure sessions for access mode and database targeting:
 
 ```php
 use Laudis\Neo4j\Databags\SessionConfiguration;
@@ -44,22 +39,19 @@ $client = ClientBuilder::create()
 |---|---|---|
 | Database | `withDatabase(string)` | Target database name |
 | Access mode | `withAccessMode(AccessMode)` | `READ()` or `WRITE()` |
-| Fetch size | `withFetchSize(int)` | Rows fetched at a time |
+| Fetch size | `withFetchSize(int)` | Rows fetched per batch |
 | Bookmarks | `withBookmarks(...)` | Causal consistency bookmarks (experimental in 3.6.x) |
 
-Do NOT set `database` explicitly unless deviating from the server-configured default.
+Do NOT set `database` unless deviating from server default.
 
 ## TransactionConfiguration
-
-Configure individual transactions:
 
 ```php
 use Laudis\Neo4j\Databags\TransactionConfiguration;
 
 $client = ClientBuilder::create()
     ->withDefaultTransactionConfiguration(
-        TransactionConfiguration::default()
-            ->withTimeout(5.0)
+        TransactionConfiguration::default()->withTimeout(5.0)
     )
     ->withDriver('default', 'bolt+s://localhost:7687')
     ->build();
@@ -67,8 +59,8 @@ $client = ClientBuilder::create()
 
 | Option | Method | Description |
 |---|---|---|
-| Timeout | `withTimeout(float)` | Maximum seconds before the transaction times out |
-| Metadata | `withMetaData(array)` | Key-value metadata attached to the transaction (experimental); note: capital D in `withMetaData` |
+| Timeout | `withTimeout(float)` | Max seconds before transaction times out |
+| Metadata | `withMetaData(array)` | Key-value metadata attached to the transaction (capital D; experimental) |
 
 ## Granular Control — Per-call Config
 
@@ -91,7 +83,7 @@ $client = ClientBuilder::create()
     ->withDriver('default', 'bolt+s://localhost:7687')
     ->build();
 
-// Override session config for a specific driver access
+// Override per-access
 $driver  = $client->getDriver('default');
 $session = $driver->createSession(
     SessionConfiguration::default()->withDatabase('management-database')
@@ -104,28 +96,19 @@ $tsx->run('SOME LONG MANAGEMENT QUERY');
 $tsx->commit();
 ```
 
-## Result Shape
-
-Queries return a `SummarizedResult` object, which contains both the result rows and execution summary.
+## Result Shape — Counters and Query Type
 
 ```php
-$result = $client->run('MATCH (x) RETURN x LIMIT 10');
-
-// Iterate through result rows
-foreach ($result as $row) {
-    // $row is a CypherMap
-}
-
-// Access the execution summary
+$result  = $client->run('MATCH (x) RETURN x LIMIT 10');
 $summary = $result->getSummary();
 
-// Counters for writes — use getCounters(), not getUpdateStatistics()
+// Write counters — use getCounters(), not getUpdateStatistics()
 $counters = $summary->getCounters();
 $counters->nodesCreated();
 $counters->relationshipsCreated();
 $counters->propertiesSet();
 
-// Query type — returns Laudis\Neo4j\Enum\QueryTypeEnum (READ_ONLY, READ_WRITE, WRITE_ONLY, SCHEMA_WRITE)
+// Query type — Laudis\Neo4j\Enum\QueryTypeEnum: READ_ONLY, READ_WRITE, WRITE_ONLY, SCHEMA_WRITE
 $summary->getQueryType();
 
 // Server info
@@ -137,38 +120,24 @@ $summary->getServerInfo()->getAddress();
 ```php
 use Laudis\Neo4j\Authentication\Authenticate;
 
-// Basic (username + password) — default
-Authenticate::basic($user, $password)
-
-// OpenID Connect token
-Authenticate::oidc($token)
-
-// Kerberos base64 ticket
-Authenticate::kerberos($base64Ticket)
-
-// No auth (anonymous access, if enabled on server)
-Authenticate::disabled()
+Authenticate::basic($user, $password)    // username + password (default)
+Authenticate::oidc($token)               // OpenID Connect token
+Authenticate::kerberos($base64Ticket)    // Kerberos base64 ticket
+Authenticate::disabled()                 // no auth (anonymous, if server allows)
 ```
 
-## Multiple Drivers (Multi-database / Failover)
+## Multiple Drivers (Failover)
 
-To configure failover, multiple drivers must share the **same alias**. You can then configure their priority as the fourth argument.
+Drivers sharing the same alias form a failover group. Fourth argument is priority — higher goes first.
 
 ```php
 $client = ClientBuilder::create()
-    // Failover group sharing the 'primary' alias
     ->withDriver('primary', 'neo4j+s://primary.example.com', Authenticate::basic($u, $p), 2)
     ->withDriver('primary', 'neo4j+s://replica.example.com', Authenticate::basic($u, $p), 1)
-    
-    // Separate database alias
     ->withDriver('local',   'bolt://localhost:7687',         Authenticate::basic('neo4j', 'dev'))
-    
     ->withDefaultDriver('primary')
     ->build();
 
-// Uses the 'primary' group (will attempt primary.example.com first due to higher priority)
-$client->run('MATCH (n) RETURN n LIMIT 1');
-
-// Override to use a specific driver by its alias
-$client->writeTransaction(fn ($tsx) => $tsx->run('MERGE (n:Node)'), 'local');
+$client->run('MATCH (n) RETURN n LIMIT 1');                                  // uses 'primary' group
+$client->writeTransaction(fn ($tsx) => $tsx->run('MERGE (n:Node)'), 'local'); // specific alias
 ```
