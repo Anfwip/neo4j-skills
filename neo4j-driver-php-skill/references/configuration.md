@@ -45,7 +45,7 @@ $client = ClientBuilder::create()
 | Database | `withDatabase(string)` | Target database name |
 | Access mode | `withAccessMode(AccessMode)` | `READ()` or `WRITE()` |
 | Fetch size | `withFetchSize(int)` | Rows fetched at a time |
-| Bookmarks | `withBookmarks(...)` | Causal consistency bookmarks (experimental) |
+| Bookmarks | `withBookmarks(...)` | Causal consistency bookmarks (experimental in 3.6.x) |
 
 Do NOT set `database` explicitly unless deviating from the server-configured default.
 
@@ -68,11 +68,12 @@ $client = ClientBuilder::create()
 | Option | Method | Description |
 |---|---|---|
 | Timeout | `withTimeout(float)` | Maximum seconds before the transaction times out |
-| Metadata | `withMetadata(array)` | Key-value metadata attached to the transaction (experimental) |
+| Metadata | `withMetaData(array)` | Key-value metadata attached to the transaction (experimental); note: capital D in `withMetaData` |
 
 ## Granular Control — Per-call Config
 
 ```php
+use Laudis\Neo4j\Databags\DriverConfiguration;
 use Laudis\Neo4j\ClientBuilder;
 use Laudis\Neo4j\Databags\SessionConfiguration;
 use Laudis\Neo4j\Databags\TransactionConfiguration;
@@ -118,12 +119,14 @@ foreach ($result as $row) {
 // Access the execution summary
 $summary = $result->getSummary();
 
-// Counters for writes
-$summary->getUpdateStatistics()->getNodesCreated();
-$summary->getUpdateStatistics()->getRelationshipsCreated();
+// Counters for writes — use getCounters(), not getUpdateStatistics()
+$counters = $summary->getCounters();
+$counters->nodesCreated();
+$counters->relationshipsCreated();
+$counters->propertiesSet();
 
-// Query type
-$summary->getQueryType();   // 'r', 'w', 'rw', 's'
+// Query type — returns Laudis\Neo4j\Enum\QueryTypeEnum (READ_ONLY, READ_WRITE, WRITE_ONLY, SCHEMA_WRITE)
+$summary->getQueryType();
 
 // Server info
 $summary->getServerInfo()->getAddress();

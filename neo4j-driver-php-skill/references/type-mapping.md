@@ -70,30 +70,21 @@ if ($point instanceof \Laudis\Neo4j\Types\WGS84Point) {
 
 ## Temporal Types
 
-Temporal types do not automatically convert to PHP's `\DateTime`. Use the driver types directly
-or convert manually:
+Temporal types have **no calendar-field getters** (`getYear`, `getMonth`, etc. do not exist). Use `toDateTime()` to convert to `\DateTimeImmutable`, or access raw epoch accessors:
 
 ```php
-$date = $row->get('created');   // Laudis\Neo4j\Types\DateTime
+$dt = $row->get('created');     // Laudis\Neo4j\Types\DateTime
 
-// Access components
-$date->getYear();
-$date->getMonth();
-$date->getDay();
-$date->getHour();
-$date->getMinute();
-$date->getSecond();
-$date->getTimezone();  // timezone string
+// Convert to PHP DateTimeImmutable (recommended)
+$php = $dt->toDateTime();       // \DateTimeImmutable
 
-// Convert to PHP DateTime (loses sub-second precision for some types)
-$phpDt = \DateTime::createFromFormat(
-    'Y-m-d H:i:s',
-    sprintf('%04d-%02d-%02d %02d:%02d:%02d',
-        $date->getYear(), $date->getMonth(), $date->getDay(),
-        $date->getHour(), $date->getMinute(), $date->getSecond()
-    )
-);
+// Raw epoch accessors
+$dt->getSeconds();              // epoch seconds
+$dt->getNanoseconds();
+$dt->getTimeZoneOffsetSeconds();
 ```
+
+`DateTimeZoneId`, `LocalDateTime`, `Date`, `Time`, `LocalTime` also expose `toDateTime()` or raw accessors — none have year/month/day/hour/minute/second getters.
 
 Pass `\DateTimeInterface` as a parameter — driver maps it to `DateTimeZoneId`:
 
@@ -108,19 +99,22 @@ $client->run(
 
 ```php
 // Node
-$node = $row->get('p');                    // Laudis\Neo4j\Types\Node
-$id     = $node->getId();                  // internal integer ID (Neo4j <5) or element ID
-$labels = $node->getLabels();              // CypherList of strings
-$props  = $node->getProperties();          // CypherMap
-$name   = $node->getProperty('name');      // single property value
-$all    = $node->getProperties()->toArray(); // all as PHP array
+$node      = $row->get('p');                    // Laudis\Neo4j\Types\Node
+$intId     = $node->getId();                    // internal integer ID (legacy; always integer)
+$elementId = $node->getElementId();             // string element ID (use for Neo4j 5+)
+$labels    = $node->getLabels();                // CypherList of strings
+$props     = $node->getProperties();            // CypherMap
+$name      = $node->getProperty('name');        // single property value
+$all       = $node->getProperties()->toArray(); // all as PHP array
 
 // Relationship
-$rel  = $row->get('r');                    // Laudis\Neo4j\Types\Relationship
-$type = $rel->getType();                   // e.g. 'KNOWS'
-$startId = $rel->getStartNodeId();
-$endId   = $rel->getEndNodeId();
-$since   = $rel->getProperty('since');
+$rel        = $row->get('r');                         // Laudis\Neo4j\Types\Relationship
+$type       = $rel->getType();                        // e.g. 'KNOWS'
+$startIntId = $rel->getStartNodeId();                 // integer (legacy)
+$endIntId   = $rel->getEndNodeId();                   // integer (legacy)
+$startEId   = $rel->getStartNodeElementId();          // string element ID
+$endEId     = $rel->getEndNodeElementId();            // string element ID
+$since      = $rel->getProperty('since');
 
 // Path
 $path  = $row->get('p');                   // Laudis\Neo4j\Types\Path

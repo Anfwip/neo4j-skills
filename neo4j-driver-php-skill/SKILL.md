@@ -1,11 +1,12 @@
 ---
 name: neo4j-driver-php-skill
-description: Neo4j PHP Driver (laudis/neo4j-php-client ^3.x) — ClientBuilder, driver
-  lifecycle, auto-committed queries, transaction functions (writeTransaction/readTransaction),
+description: Neo4j PHP Driver (laudis/neo4j-php-client ^3.x) — Client > Driver > Session >
+  Transaction architecture, ClientBuilder, driver lifecycle, session-level executeQuery and
+  bookmarks, auto-committed queries, transaction functions (writeTransaction/readTransaction),
   unmanaged transactions (beginTransaction/commit/rollback), result access via CypherList
   and CypherMap, Cypher-to-PHP type mapping, ParameterHelper, URL schemes, SessionConfiguration,
-  TransactionConfiguration, Aura and cluster support. Use when writing PHP code that
-  connects to Neo4j via Bolt or routed protocol. Package is laudis/neo4j-php-client.
+  TransactionConfiguration, Aura and cluster support, causal consistency. Use when writing
+  PHP code that connects to Neo4j via Bolt or routed protocol. Package is laudis/neo4j-php-client.
   Does NOT handle Cypher query authoring — use neo4j-cypher-skill.
   Does NOT cover Laravel MCP integration — use neo4j-laravel-boost-skill.
   Does NOT cover driver version migration — use neo4j-migration-skill.
@@ -15,7 +16,8 @@ allowed-tools: Bash
 
 ## When to Use
 - Writing PHP code that connects to Neo4j
-- Setting up ClientBuilder, transaction functions, or unmanaged transactions
+- Setting up ClientBuilder, sessions, transaction functions, or unmanaged transactions
+- Maintaining causal consistency (read-your-own-writes) across multiple queries on a cluster
 - Debugging result handling, type mapping, or Aura/cluster connectivity
 - Reviewing Neo4j driver usage in PHP code
 
@@ -32,9 +34,9 @@ allowed-tools: Bash
 composer require laudis/neo4j-php-client
 ```
 
-If `composer require` fails → verify PHP >= 8.0 and extensions `ext-bcmath`, `ext-json`, `ext-sockets` are installed. **Stop and report.**
+If `composer require` fails → verify PHP ^8.1 and extensions `ext-json`, `ext-mbstring` are installed. **Stop and report.**
 
-> HTTP/HTTPS drivers removed in v3.3.0. Use only `bolt://`, `bolt+s://`, `neo4j://`, or `neo4j+s://` URIs.
+> HTTP/HTTPS drivers removed in v3.3.0. Use only `bolt://`, `bolt+s://`, `bolt+ssc://`, `neo4j://`, `neo4j+s://`, or `neo4j+ssc://` URIs.
 
 ---
 
@@ -69,6 +71,19 @@ $dotenv->load();
 
 ---
 
+## Architecture: Client > Driver > Session > Transaction
+
+| Layer | Get it with | Lifetime | Role |
+|---|---|---|---|
+| Client | `ClientBuilder::create()->...->build()` | one per app | Maps aliases to drivers; failover by priority; convenience `run`/`*Transaction` (opens a **new session per call**) |
+| Driver | `$client->getDriver('alias')` or `Basic\Driver::create($uri, authenticate: ...)` | one per app | Connection pool, routing table, `verifyConnectivity()`, `getServerInfo()`, `closeConnections()` |
+| Session | `$driver->createSession(SessionConfiguration::default()->withDatabase('neo4j'))` | one per unit of work / request | Target database + access mode, chains bookmarks for causal consistency, `executeQuery()`, `close()` |
+| Transaction | `$session->writeTransaction(fn)` / `readTransaction(fn)` / `beginTransaction()` | one atomic unit | Runs Cypher; managed (retried) or unmanaged |
+
+**Use a single Session when later queries must observe earlier writes (read-your-own-writes on a cluster).** Separate `$client->...` calls open new sessions each time and do not share bookmarks.
+
+---
+
 ## Client Lifecycle
 
 Create **one client per application**. Expensive to create; reuse across requests.
@@ -94,6 +109,17 @@ $client = ClientBuilder::create()
     ->build();
 ```
 
+Alternatively, create a Driver directly (no Client alias mapping needed):
+
+```php
+use Laudis\Neo4j\Basic\Driver;
+use Laudis\Neo4j\Authentication\Authenticate;
+
+$driver = Driver::create($uri, authenticate: Authenticate::basic($user, $password));
+$driver->verifyConnectivity();   // throws on failure
+$driver->getServerInfo();        // Neo4j version, address
+```
+
 URI schemes:
 
 | Driver | Scheme | TLS valid cert | TLS self-signed |
@@ -111,15 +137,17 @@ Default if no scheme given: `bolt://localhost:7687?database=neo4j`.
 
 | Approach | Method | Auto-retry | Use when |
 |---|---|---|---|
-| Transaction functions | `writeTransaction()` / `readTransaction()` | ✅ | **Default** — production, Aura, clusters, any HA setup |
-| Auto-committed | `run()` / `runStatement()` | ❌ | Simple scripts, one-offs, non-critical reads |
-| Unmanaged | `beginTransaction()` | ❌ | Need explicit commit/rollback control |
+| Transaction functions (Client) | `$client->writeTransaction()` / `readTransaction()` | ✅ on TransientError, NotALeader, connection errors | **Default** — production, Aura, clusters, any HA setup |
+| Session-level query | `$session->executeQuery($cypher, $params)` | ✅ same retry as transaction functions; full result loaded | Need causal consistency / bookmarks across calls |
+| Auto-committed | `$client->run()` / `runStatement()` | ⚠️ retries on connection/routing errors only (not TransientError) | Simple scripts, one-offs, non-critical reads |
+| Multiple auto-committed | `$client->runStatements([...])` | ⚠️ each statement is its own auto-commit transaction — **not atomic** | Bulk independent statements (not a single transaction) |
+| Unmanaged | `$session->beginTransaction()` | ❌ | Need explicit commit/rollback control |
 
 ---
 
 ## Transaction Functions (Default)
 
-Default for all production code. Driver re-executes callback on transient errors, commits on success, rolls back on timeout, and routes to the correct server (leader for writes, followers for reads).
+Default for all production code. Driver re-executes the callback on transient errors (up to 3 attempts, 100 ms pause), clears routing table and retries on `NotALeader`, and retries on connection errors. Routes to the correct server (leader for writes, followers for reads).
 
 ```php
 use Laudis\Neo4j\Contracts\TransactionInterface;
@@ -161,9 +189,44 @@ $counter->increment();
 
 ---
 
+## Session-level Queries (Causal Consistency)
+
+When multiple queries must see each other's writes on a cluster, use a single session. `executeQuery()` retries on errors and loads the full result.
+
+```php
+use Laudis\Neo4j\Databags\SessionConfiguration;
+
+$driver  = $client->getDriver('default');
+$session = $driver->createSession(
+    SessionConfiguration::default()->withDatabase('neo4j')
+);
+
+// Write
+$session->executeQuery(
+    'MERGE (p:Person {email: $email}) RETURN p',
+    ['email' => 'alice@example.com']
+);
+
+// Read — same session → bookmarks ensure read-your-own-writes
+$people = $session->executeQuery('MATCH (p:Person) RETURN p.name AS name');
+
+// Propagate bookmark to another session (e.g., across requests)
+$bookmark = $session->getLastBookmark();
+$session->close();
+
+// New session starting from the bookmark
+$session2 = $driver->createSession(
+    SessionConfiguration::default()
+        ->withDatabase('neo4j')
+        ->withBookmarks($bookmark)   // experimental in 3.6.x
+);
+```
+
+---
+
 ## Auto-committed Queries
 
-Use for simple, non-critical queries only. No automatic retry.
+Use for simple, non-critical queries only. Retries on connection/routing errors but **not** on `TransientError`.
 
 ```php
 // Single query — optional params, optional connection alias
@@ -182,11 +245,12 @@ $statement = new Statement(
 );
 $client->runStatement($statement);
 
-// Multiple statements in one call
+// Multiple statements — each runs in its own auto-commit transaction (NOT atomic)
 $client->runStatements([
     Statement::create('MERGE (a:A {id: $id})', ['id' => 1]),
     Statement::create('MERGE (b:B {id: $id})', ['id' => 2]),
 ]);
+// If atomicity is required, use beginTransaction() instead.
 ```
 
 ---
@@ -251,12 +315,15 @@ Node and relationship access:
 $results = $client->run('MATCH (p:Person)-[r:KNOWS]->(f) RETURN p, r, f');
 
 foreach ($results as $row) {
-    $node = $row->get('p');           // Laudis\Neo4j\Types\Node
-    $name = $node->getProperty('name');
-    $id   = $node->getId();           // internal integer ID (element ID on newer Neo4j/driver versions)
+    $node      = $row->get('p');              // Laudis\Neo4j\Types\Node
+    $name      = $node->getProperty('name');
+    $intId     = $node->getId();              // internal integer ID (legacy)
+    $elementId = $node->getElementId();       // string element ID (use for Neo4j 5+)
 
-    $rel  = $row->get('r');           // Laudis\Neo4j\Types\Relationship
-    $type = $rel->getType();          // 'KNOWS'
+    $rel       = $row->get('r');              // Laudis\Neo4j\Types\Relationship
+    $type      = $rel->getType();             // 'KNOWS'
+    $startEId  = $rel->getStartNodeElementId();
+    $endEId    = $rel->getEndNodeElementId();
 }
 ```
 
@@ -320,6 +387,9 @@ $client->writeTransaction(static function (TransactionInterface $tsx) use ($peop
 | Calling `beginTransaction` without `commit` | Transaction leaks — always `commit()` or `rollback()` |
 | `first()` on empty result | Throws — check `$results->count()` first |
 | Credentials hardcoded | Load from env or `.env` file |
+| Multiple `$client->run()` calls expecting causal consistency | Use a single session with `$session->executeQuery()` |
+| `runStatements([...])` expecting atomicity | Not atomic — use `beginTransaction()` for a single transaction |
+| `$node->getId()` expecting element ID | Use `$node->getElementId()` (string) for Neo4j 5+ |
 
 ---
 
@@ -337,7 +407,8 @@ Docs:
 
 ## Checklist
 - [ ] `laudis/neo4j-php-client` installed via Composer (not `neo4j-php-client`)
-- [ ] One client created at startup; shared across all requests
+- [ ] PHP ^8.1, `ext-json`, `ext-mbstring` verified; `ext-bcmath` optional
+- [ ] One client (or driver) created at startup; shared across all requests
 - [ ] Credentials loaded from env vars; `.env` in `.gitignore`
 - [ ] `writeTransaction` / `readTransaction` used for production code (not `run`)
 - [ ] Transaction callback is idempotent — side effects moved outside
@@ -346,3 +417,5 @@ Docs:
 - [ ] `bolt://` or `neo4j://` URI scheme — no `http://`
 - [ ] `beginTransaction()` always paired with `commit()` or `rollback()`
 - [ ] Batch writes use UNWIND with array parameter (not one tx per item)
+- [ ] Single session used when causal consistency is required across multiple queries
+- [ ] `getElementId()` used instead of `getId()` when working with Neo4j 5+ element IDs

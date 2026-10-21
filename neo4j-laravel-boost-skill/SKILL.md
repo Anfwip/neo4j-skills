@@ -1,12 +1,13 @@
 ---
 name: neo4j-laravel-boost-skill
-description: Install and configure neo4j/laravel-boost — Laravel integration for the official
-  Neo4j MCP server. Covers composer install, php artisan neo4j-boost:setup, STDIO and HTTP
-  transport modes, Cursor MCP config (.cursor/mcp.json), neo4j-boost:start-neo4j Docker
-  helper, container:graph DI export, driver transport (in-process Bolt), neo4j-boost:doctor
-  diagnostics, and single-server Boost MCP setup. Use when adding Neo4j MCP tools to a
-  Laravel 12/13 application via Laravel Boost, or configuring Cursor to connect to Neo4j
-  through php artisan boost:mcp.
+description: neo4j/laravel-boost — x-ray vision into a Laravel app's wiring: routes, middleware,
+  events, jobs, scheduled tasks, policies, notifications, mailables, and container bindings exported
+  to a Neo4j knowledge graph. Use to answer architecture questions (what depends on X, what breaks
+  if I change Y, which classes build when POST /checkout is hit), find hidden dependencies (facades,
+  app()/resolve(), global helpers, new instantiation), contribute missing edges, or install and
+  configure the MCP server (driver transport default, STDIO optional, HTTP optional). Covers
+  neo4j-boost:setup, Cursor MCP config (.cursor/mcp.json), neo4j-boost:start-neo4j Docker helper,
+  neo4j-boost:doctor diagnostics, and all six MCP tools including contribute-graph-knowledge.
   Does NOT handle raw PHP driver code — use neo4j-driver-php-skill.
   Does NOT handle Cypher query authoring — use neo4j-cypher-skill.
   Does NOT handle standalone MCP server setup (without Laravel) — use neo4j-mcp-skill.
@@ -15,12 +16,14 @@ allowed-tools: Bash
 ---
 
 ## When to Use
+- Understanding how a Laravel app is wired: which classes a route, job, event, scheduled task, policy, notification, or mailable ends up building
+- Change impact analysis: what depends on a class or interface (outbound or inbound)
+- Finding hidden dependencies: facades, `app()`/`resolve()` calls, global helpers, and `new` instantiation
+- Contributing missing wiring edges the graph couldn't detect automatically
 - Adding Neo4j MCP tools to a Laravel 12 or 13 application
-- Running `neo4j-boost:setup` to install/configure the MCP binary
 - Configuring Cursor MCP with `php artisan boost:mcp` (single-server pattern)
 - Starting local Neo4j via `neo4j-boost:start-neo4j`
-- Exporting Laravel container bindings to Neo4j (`container:graph`)
-- Choosing between STDIO, HTTP, or driver transport
+- Choosing between driver (default), STDIO, or HTTP transport
 - Diagnosing Neo4j MCP issues with `neo4j-boost:doctor`
 
 ## When NOT to Use
@@ -38,7 +41,7 @@ allowed-tools: Bash
 | PHP | ^8.2 |
 | Laravel | ^12.0 or ^13.0 |
 | Laravel Boost | ^2.0 |
-| Laravel MCP | ^0.5.1 |
+| Laravel MCP | ^0.5.1 (dev dependency) |
 
 `laudis/neo4j-php-client ^3.4` pulled automatically.
 
@@ -47,7 +50,13 @@ allowed-tools: Bash
 ## Step 1 — Install packages
 
 ```bash
-composer require laravel/boost laravel/mcp neo4j/laravel-boost
+composer require neo4j/laravel-boost
+```
+
+`laravel/boost` and `laudis/neo4j-php-client` are pulled automatically. `laravel/mcp` is a dev dependency of the package; you only need to install it explicitly if you're not already using it:
+
+```bash
+composer require laravel/mcp  # only if not already installed
 ```
 
 If `composer require` fails with dependency errors → verify PHP 8.2+ and Laravel 12/13. **Stop and report.**
@@ -60,10 +69,11 @@ If `composer require` fails with dependency errors → verify PHP 8.2+ and Larav
 php artisan neo4j-boost:setup
 ```
 
-Setup does:
-1. Downloads/verifies `neo4j-mcp` binary for current platform
-2. Validates STDIO requirements
-3. Writes `.cursor/mcp.json` for Cursor integration
+Setup defaults to the **driver transport** (in-process Bolt via `laudis/neo4j-php-client`). No `neo4j-mcp` binary is required unless you set `NEO4J_MCP_TRANSPORT=stdio`. Options:
+
+- `--install-mcp` — download binary for STDIO transport
+- `--skip-mcp` — skip binary step
+- `--no-cursor-config` — skip Cursor `.cursor/mcp.json` generation
 
 Non-interactive (CI / Composer hook):
 ```bash
@@ -86,17 +96,23 @@ Optional — auto-run after `composer update`:
 ## Step 3 — Configure .env
 
 ```env
-NEO4J_MCP_TRANSPORT=stdio
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=your-password
+```
+
+For Aura, use the `neo4j+s://` console URI — driver transport works with it directly:
+```env
+NEO4J_URI=neo4j+s://xxxx.databases.neo4j.io
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your-aura-password
 ```
 
 Verify `.env` is in `.gitignore`. Never hardcode credentials.
 
 ---
 
-## Step 4 — Start local Neo4j (STDIO mode)
+## Step 4 — Start local Neo4j
 
 ```bash
 php artisan neo4j-boost:start-neo4j
@@ -163,17 +179,99 @@ php artisan neo4j-boost:test-stdio --tool=get-schema
 
 ---
 
+## App Knowledge Graph (core feature)
+
+Boost exports your Laravel app's complete wiring into Neo4j so the assistant can answer architecture questions from a graph instead of grepping source files.
+
+### What the graph covers
+
+Routes, middleware, events, jobs, scheduled tasks, auth guards, providers, password brokers, policies and gate abilities, notifications and their channels, mailables and mailers, broadcast channels, and all container bindings. Both **declared** (constructor injection) and **hidden** dependencies (facades, `app()`/`resolve()`, global helpers like `cache()`, `auth()`, `config()`, and `new ClassName()`).
+
+### 1 — Export (re-run after code changes or upgrades)
+
+```bash
+php artisan container:graph            # export to Neo4j
+php artisan container:graph --dry-run  # preview only
+php artisan container:graph --print-cypher  # show generated Cypher
+```
+
+For hidden dependencies, set the static scan paths **before** running:
+```env
+NEO4J_CONTAINER_GRAPH_STATIC_SCAN_PATHS=/abs/path/to/app/Services
+NEO4J_CONTAINER_GRAPH_STATIC_SCAN_PROVIDER_PATHS=/abs/path/to/app/Providers
+```
+
+Without scan paths, the graph only captures constructor-injection dependencies.
+
+Export is idempotent — `MERGE`-based, safe to re-run.
+
+### 2 — Graph model
+
+```
+(:Route)-[:HANDLED_BY]->(:Abstract)-[:RESOLVES_TO {lifetime}]->(:Instance)
+  -[:DEPENDS_ON {type,source,confidence,...}]->(:Dependency)-[:IDENTIFIED_AS]->(:Abstract)
+(:Route)-[:USES_MIDDLEWARE {order,parameters}]->(:Middleware)-[:IDENTIFIED_AS]->(:Abstract)
+(:Event|:Job|:ScheduledTask|:Notification|:Mailable|:BroadcastChannel)-[:HANDLED_BY]->(:Abstract)
+(:Job|:Mailable)-[:USES_CONNECTION]->(:QueueConnection)
+(:AuthGuard)-[:USES_PROVIDER]->(:AuthProvider)-[:USES_MODEL]->(:Abstract)
+(:Policy)-[:FOR_MODEL]->(:Abstract)
+(:Abstract)-[:BINDS_TO]->(:Abstract)
+(:Instance)-[:CONTEXTUAL_BINDS {needs,reason}]->(:Abstract)
+```
+
+Key edge properties:
+- `DEPENDS_ON.type`: `constructor_injection`, `method_injection`, `global_helper`, or `instantiation`
+- `DEPENDS_ON.source`: `di`, `facade`, `global_helper`, or `service_location`
+- `RESOLVES_TO.lifetime`: `singleton` or `bind`
+
+### 3 — Query the graph
+
+Use `get-class-dependency-graph` for a single class. Use `read-cypher` for cross-cutting questions:
+
+```cypher
+// What does a route build? Full dependency chain
+MATCH (r:Route)-[:HANDLED_BY]->(:Abstract)-[:RESOLVES_TO]->(root:Instance)
+OPTIONAL MATCH path = (root)-[:DEPENDS_ON|IDENTIFIED_AS|RESOLVES_TO*0..8]->(n)
+RETURN r, root, path LIMIT 50;
+
+// What depends on PaymentGateway? (inbound)
+MATCH (dep)-[:DEPENDS_ON]->(:Dependency)-[:IDENTIFIED_AS]->(:Abstract {fqcn: 'App\\Services\\PaymentGateway'})
+RETURN dep LIMIT 50;
+```
+
+Always check `graph_completeness` in `get-class-dependency-graph` responses before claiming "nothing depends on X".
+
+### 4 — Contribute missing edges
+
+When you find wiring the graph lacks, call `contribute-graph-knowledge`:
+
+- `confidence: medium` or `low` → tool returns `confirmation_required` and writes nothing. Ask the user, then call again with `confirmed: true`. Edge stored with `source: user`.
+- `confidence: high` → written immediately with `source: agent`.
+- Contributed `DEPENDS_ON` edges default to `type: service_location`.
+
+Example prompts and per-label queries (jobs, events, policies, mailables, etc.) → [`docs/PROMPTS.md`](https://github.com/neo4j-php/neo4j-boost/blob/main/docs/PROMPTS.md) and [`docs/tutorials/container-graph.md`](https://github.com/neo4j-php/neo4j-boost/blob/main/docs/tutorials/container-graph.md).
+
+---
+
 ## Transport Modes
 
 | Mode | `NEO4J_MCP_TRANSPORT` | How it works | Binary needed |
 |---|---|---|---|
-| STDIO (default) | `stdio` | Runs `neo4j-mcp` binary as subprocess | Yes |
+| Driver **(default)** | `driver` | In-process Bolt via `laudis/neo4j-php-client` | No |
+| STDIO | `stdio` | Runs `neo4j-mcp` binary as subprocess | Yes (install with `neo4j-boost:install-mcp`) |
 | HTTP | `http` | Connects to remote/Docker MCP server | No |
-| Driver | `driver` | In-process Bolt via `laudis/neo4j-php-client` | No |
 
-### STDIO (default)
+### Driver (default — no binary required)
 
-Default. Binary auto-installed by `neo4j-boost:setup`. Subprocess receives `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`.
+Default when `NEO4J_MCP_TRANSPORT` is not set. Uses `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` directly.
+
+### STDIO (optional)
+
+Binary auto-installed by `neo4j-boost:setup --install-mcp` or `neo4j-boost:install-mcp`. Subprocess receives `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`.
+
+```env
+NEO4J_MCP_TRANSPORT=stdio
+```
 
 ### HTTP
 
@@ -192,19 +290,6 @@ docker run --rm -p 8080:8080 \
   neo4j/mcp:latest
 ```
 
-### Driver (in-process Bolt)
-
-No binary, no separate server — uses `laudis/neo4j-php-client` directly:
-
-```env
-NEO4J_MCP_TRANSPORT=driver
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=password
-```
-
-`get-schema` uses `apoc.meta.schema` when APOC installed; falls back to `db.labels`/`db.relationshipTypes` without APOC.
-
 ---
 
 ## Available MCP Tools
@@ -217,53 +302,28 @@ Single `php artisan boost:mcp` exposes **both** Laravel Boost tools and Neo4j to
 | `read-cypher` | read | Read-only Cypher (MATCH, RETURN, SHOW) |
 | `write-cypher` | write | Write Cypher (MERGE, CREATE, SET, DELETE) |
 | `list-gds-procedures` | read | GDS procedures (requires GDS plugin) |
-| `get-class-dependency-graph` | read | Laravel DI dependency graph (requires `container:graph` export) |
+| `get-class-dependency-graph` | read | App knowledge graph for one class — see parameters below |
+| `contribute-graph-knowledge` | write | Add DEPENDS_ON or BINDS_TO edges the static scan missed |
 
 Boost tools (search-docs, browser-logs, database, etc.) also available from the same server.
 
----
+### get-class-dependency-graph parameters
 
-## Container Graph — DI Export to Neo4j
-
-Export Laravel container bindings as a graph:
-
-```bash
-php artisan container:graph               # export
-php artisan container:graph --dry-run     # preview only
-php artisan container:graph --print-cypher # show Cypher
-```
-
-Uses `NEO4J_URI` + `NEO4J_USER`/`NEO4J_USERNAME` + `NEO4J_PASSWORD`. Falls back to `NEO4J_DEFAULT_CONNECTION_DSN` when `NEO4J_URI` is empty.
-
-### Graph model
-
-```
-(:Interface:Abstract)-[:BINDS_TO {shared}]->(:Class:Abstract)
-(:Class:Abstract)-[:DEPENDS_ON]->(:Class:Abstract|:Interface:Abstract|:UnresolvedDependency:Abstract)
-```
-
-Query after export:
-```cypher
-MATCH p = (a:Abstract)-[:BINDS_TO|DEPENDS_ON*1..6]-(n)
-RETURN p LIMIT 200;
-```
-
-Idempotent — `MERGE`-based, safe to re-run.
-
-### get-class-dependency-graph tool
-
-After running `container:graph`, use the MCP tool:
 ```json
 {
-  "class": "App\\Services\\FooService",
-  "direction": "outbound",
+  "class": "App\\Services\\PaymentGateway",
   "depth": 4,
+  "direction": "inbound",
+  "include_bindings": true,
   "page": 1,
-  "per_page": 100
+  "per_page": 50
 }
 ```
 
-Returns `dependencies`, `dependents`, `binding`, pagination metadata.
+- `direction`: `outbound`, `inbound`, or `both`
+- `depth`: 1–10
+
+Response includes `declared_dependencies`, `hidden_dependencies` (each with `type`, `source`, `confidence`, `visibility`), binding targets, unresolved types, and a `graph_completeness` block. **Always read `graph_completeness` before stating a class has no dependents.**
 
 ---
 
@@ -304,13 +364,13 @@ Full reference → [references/configuration.md](references/configuration.md)
 
 | Command | Description |
 |---|---|
-| `neo4j-boost:setup` | Interactive STDIO-first setup (binary, env checks, Cursor config) |
-| `neo4j-boost:install-mcp` | Download/install the official `neo4j-mcp` binary |
-| `neo4j-boost:start-neo4j` | Start local Neo4j Docker for STDIO mode |
+| `neo4j-boost:setup` | Interactive setup (driver transport default; binary optional for STDIO) |
+| `neo4j-boost:install-mcp` | Download/install the official `neo4j-mcp` binary (STDIO only) |
+| `neo4j-boost:start-neo4j` | Start local Neo4j Docker |
 | `neo4j-boost:doctor` | Diagnose transport, binary, password, and readiness |
 | `neo4j-boost:test-stdio` | Verbose end-to-end STDIO handshake/tool test |
 | `neo4j-boost:cursor-config` | Create/update `.cursor/mcp.json` for the MCP server |
-| `container:graph` | Export Laravel container bindings to Neo4j graph |
+| `container:graph` | Export Laravel app wiring to Neo4j knowledge graph |
 
 ---
 
@@ -325,6 +385,7 @@ Full reference → [references/configuration.md](references/configuration.md)
 | HTTP 404: "only handles requests to /mcp" | Cursor sends GET; MCP expects POST | Use Boost STDIO (`php artisan boost:mcp`); don't point Cursor at MCP HTTP URL directly |
 | `container:graph` connects to wrong host in Docker | `NEO4J_URI` points to `localhost` inside container | Set `NEO4J_URI` to container network host, or use `NEO4J_DEFAULT_CONNECTION_DSN` |
 | GDS errors ("Unknown function 'gds.version'") | GDS plugin not installed | Install GDS; other tools work without it |
+| `get-class-dependency-graph` misses facade/helper deps | Static scan not configured | Set `NEO4J_CONTAINER_GRAPH_STATIC_SCAN_PATHS` and re-run `container:graph` |
 
 ---
 
@@ -332,19 +393,23 @@ Full reference → [references/configuration.md](references/configuration.md)
 
 - [references/configuration.md](references/configuration.md) — full config/neo4j-boost.php reference, env vars, transport details
 - [Neo4j Boost GitHub](https://github.com/neo4j-php/neo4j-boost)
+- [App graph prompts](https://github.com/neo4j-php/neo4j-boost/blob/main/docs/PROMPTS.md)
+- [Container graph tutorial](https://github.com/neo4j-php/neo4j-boost/blob/main/docs/tutorials/container-graph.md)
 - [Official Neo4j MCP Server](https://github.com/neo4j/mcp)
 - [Laravel Boost](https://github.com/laravel/boost)
 
 ---
 
 ## Checklist
-- [ ] `composer require laravel/boost laravel/mcp neo4j/laravel-boost` — all three installed
+- [ ] `composer require neo4j/laravel-boost` — package installed
 - [ ] `php artisan neo4j-boost:setup` run successfully
 - [ ] `.env` has `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`; `.env` in `.gitignore`
-- [ ] Transport mode chosen: `stdio` (default), `http`, or `driver`
+- [ ] Transport mode: `driver` (default, no binary), `stdio` (binary via `neo4j-boost:install-mcp`), or `http`
 - [ ] Local Neo4j running (`neo4j-boost:start-neo4j`) or remote URI configured
 - [ ] `.cursor/mcp.json` has `"env": {"APP_ENV": "local"}` in server entry
 - [ ] Cursor workspace is the Laravel app folder (not the package dir)
 - [ ] `php artisan neo4j-boost:doctor` passes
 - [ ] Smoke test: `read-cypher: RETURN 'connected' AS status` returns result
 - [ ] `container:graph` run if using `get-class-dependency-graph` tool
+- [ ] `NEO4J_CONTAINER_GRAPH_STATIC_SCAN_PATHS` set to include `app/` if hidden deps needed
+- [ ] `graph_completeness` checked in `get-class-dependency-graph` before asserting no dependents

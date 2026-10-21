@@ -35,13 +35,13 @@ php artisan config:clear
 
 | Variable | Default | Values |
 |---|---|---|
-| `NEO4J_MCP_TRANSPORT` | `stdio` | `stdio`, `http`, `driver` |
+| `NEO4J_MCP_TRANSPORT` | `driver` | `driver`, `stdio`, `http` |
 
 ### STDIO transport
 
 | Variable | Default | Description |
 |---|---|---|
-| `NEO4J_MCP_STDIO_COMMAND` | `neo4j-mcp` | Path to binary (auto-installed by setup) |
+| `NEO4J_MCP_STDIO_COMMAND` | `neo4j-mcp` | Path to binary (auto-installed by `neo4j-boost:install-mcp`) |
 | `NEO4J_MCP_VERSION` | `v1.4.0` | Binary version to download |
 | `NEO4J_MCP_BINARY_PATH` | (auto) | Custom binary path override |
 | `NEO4J_MCP_PLATFORM_ASSET` | (auto) | Override auto-detected platform asset name |
@@ -71,6 +71,10 @@ Uses `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` from core
 | `NEO4J_DEFAULT_CONNECTION_DSN` | (empty) | Fallback DSN when `NEO4J_URI` empty |
 | `NEO4J_USER` | falls back to `NEO4J_USERNAME` | Username for container graph |
 | `NEO4J_PASSWORD` | (empty) | Password for container graph |
+| `NEO4J_CONTAINER_GRAPH_STATIC_SCAN_PATHS` | (empty) | Absolute paths to scan for hidden deps (`app()`/facades/helpers/`new`); comma-separated |
+| `NEO4J_CONTAINER_GRAPH_STATIC_SCAN_PROVIDER_PATHS` | (empty) | Absolute paths for provider scanning; comma-separated |
+
+Set `NEO4J_CONTAINER_GRAPH_STATIC_SCAN_PATHS` to include your `app/` directory to capture facade calls, `app()`/`resolve()`, global helpers (`cache()`, `auth()`, `config()`), and `new ClassName()` instantiation. Without it, the graph only contains constructor-injection edges.
 
 ---
 
@@ -79,7 +83,7 @@ Uses `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` from core
 ```php
 return [
     'transport' => [
-        'driver' => env('NEO4J_MCP_TRANSPORT', 'stdio'),
+        'driver' => env('NEO4J_MCP_TRANSPORT', 'driver'),
 
         'stdio' => [
             'command' => env('NEO4J_MCP_STDIO_COMMAND', 'neo4j-mcp'),
@@ -98,7 +102,7 @@ return [
     ],
 
     'neo4j_mcp' => [
-        'transport'      => env('NEO4J_MCP_TRANSPORT', 'stdio'),
+        'transport'      => env('NEO4J_MCP_TRANSPORT', 'driver'),
         'version'        => env('NEO4J_MCP_VERSION', 'v1.4.0'),
         'binary_path'    => env('NEO4J_MCP_BINARY_PATH'),
         'platform_asset' => env('NEO4J_MCP_PLATFORM_ASSET'),
@@ -118,6 +122,8 @@ return [
         'default_connection_dsn' => env('NEO4J_DEFAULT_CONNECTION_DSN', ''),
         'username'               => env('NEO4J_USER', env('NEO4J_USERNAME', 'neo4j')),
         'password'               => env('NEO4J_PASSWORD', ''),
+        'static_scan_paths'      => env('NEO4J_CONTAINER_GRAPH_STATIC_SCAN_PATHS', ''),
+        'static_scan_provider_paths' => env('NEO4J_CONTAINER_GRAPH_STATIC_SCAN_PROVIDER_PATHS', ''),
     ],
 ];
 ```
@@ -125,6 +131,8 @@ return [
 ---
 
 ## Platform support (neo4j-mcp binary)
+
+Only required for STDIO transport. Driver transport uses no binary.
 
 | OS | Architecture | Archive | PHP requirement |
 |---|---|---|---|
